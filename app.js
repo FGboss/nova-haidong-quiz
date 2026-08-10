@@ -177,6 +177,7 @@ const DEFAULT_TRAINING_PLAN = [
 ];
 
 // ===== 存储层（localStorage缓存 + 云端API同步） =====
+// 设计原则：服务器是唯一数据源，localStorage仅作缓存，每次查看数据前从服务器拉取最新
 const API_BASE = '';
 
 const Store = {
@@ -185,7 +186,7 @@ const Store = {
   setUser(u){localStorage.setItem('quiz_user',JSON.stringify(u));fetch(API_BASE+'/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:u.name})}).catch(e=>{console.error('[API] login failed:',e)})},
   clearUser(){localStorage.removeItem('quiz_user')},
 
-  // 答题记录 - 学员端本地缓存（与导师端隔离）
+  // 学员端缓存
   _getCache(){try{return JSON.parse(localStorage.getItem('quiz_records')||'[]')}catch(e){return[]}},
   _setCache(rs){localStorage.setItem('quiz_records',JSON.stringify(rs))},
   getRecords(){return this._getCache()},
@@ -194,59 +195,70 @@ const Store = {
   // 导师端独立缓存
   _getMCache(){try{return JSON.parse(localStorage.getItem('quiz_mentor_records')||'[]')}catch(e){return[]}},
   _setMCache(rs){localStorage.setItem('quiz_mentor_records',JSON.stringify(rs))},
+  getMentorRecords(){return this._getMCache()},
 
-  // 从云端同步学员记录（以服务端数据为准，只保留本地未上传的）
+  // 从服务器拉取学员记录（完全替换本地缓存，不合并）
   async syncRecords(name){
     try{
       const res=await fetch(API_BASE+'/api/records/'+encodeURIComponent(name)+'?_='+Date.now());
       const d=await res.json();
       if(d.success){
-        const local=this._getCache();
-        const sid=new Set(d.records.map(r=>r.id));
-        // 服务端记录 + 本地独有记录
-        this._setCache([...d.records,...local.filter(r=>!sid.has(r.id))]);
+        this._setCache(d.records);
+        return d.records;
       }
     }catch(e){console.error('[API] syncRecords failed:',e)}
+    return this._getCache();
   },
 
-  // 保存记录（本地+云端），用服务端响应更新本地
+  // 保存记录到服务器，然后刷新本地缓存
   async saveRecord(r){
-    const rs=this._getCache();
-    rs.push(r);
-    this._setCache(rs);
     try{
       const res=await fetch(API_BASE+'/api/records',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(r)});
       const d=await res.json();
       if(d.success&&d.record){
-        // 用服务端返回的record更新本地（确保ID一致）
+        // 服务器返回的记录是权威版本，替换本地缓存
+        const rs=this._getCache();
         const idx=rs.findIndex(x=>x.id===r.id);
-        if(idx>=0){rs[idx]=d.record;this._setCache(rs)}
+        if(idx>=0) rs[idx]=d.record; else rs.push(d.record);
+        this._setCache(rs);
+        return d.record;
       }
-    }catch(e){console.error('[API] saveRecord failed:',e);showToast('同步失败，记录仅保存在本地','error')}
+    }catch(e){console.error('[API] saveRecord failed:',e);showToast('网络异常，请检查连接后重试','error')}
+    return null;
   },
 
-  // 更新记录（本地+云端，导师操作）
+  // 更新记录（导师操作）
   async updateRecord(id,updates){
-    const rs=this._getCache();const i=rs.findIndex(r=>r.id===id);
-    if(i>=0){rs[i]={...rs[i],...updates};this._setCache(rs)}
-    // 同时更新导师缓存
-    const ms=this._getMCache();const mi=ms.findIndex(r=>r.id===id);
-    if(mi>=0){ms[mi]={...ms[mi],...updates};this._setMCache(ms)}
-    const tk=this._token();
-    if(tk){try{await fetch(API_BASE+'/api/mentor/records/'+id+'/score',{method:'PUT',headers:{'Content-Type':'application/json','x-mentor-token':tk},body:JSON.stringify(updates)})}catch(e){console.error('[API] updateRecord failed:',e)}}
+    const tk=this._token();if(!tk)return null;
+    try{
+      const res=await fetch(API_BASE+'/api/mentor/records/'+id+'/score',{method:'PUT',headers:{'Content-Type':'application/json','x-mentor-token':tk},body:JSON.stringify(updates)});
+      const d=await res.json();
+      if(d.success&&d.record){
+        // 更新学员缓存
+        const rs=this._getCache();const i=rs.findIndex(r=>r.id===id);
+        if(i>=0){rs[i]=d.record;this._setCache(rs)}
+        // 更新导师缓存
+        const ms=this._getMCache();const mi=ms.findIndex(r=>r.id===id);
+        if(mi>=0){ms[mi]=d.record;this._setMCache(ms)}
+        return d.record;
+      }
+    }catch(e){console.error('[API] updateRecord failed:',e)}
+    return null;
   },
   async resetRecordScore(id){
-    const tk=this._token();if(!tk)return;
+    const tk=this._token();if(!tk)return null;
     try{
       const res=await fetch(API_BASE+'/api/mentor/records/'+id+'/score',{method:'DELETE',headers:{'x-mentor-token':tk}});
       const d=await res.json();
-      if(d.success){
+      if(d.success&&d.record){
         const rs=this._getCache();const i=rs.findIndex(r=>r.id===id);
         if(i>=0){rs[i]=d.record;this._setCache(rs)}
         const ms=this._getMCache();const mi=ms.findIndex(r=>r.id===id);
         if(mi>=0){ms[mi]=d.record;this._setMCache(ms)}
+        return d.record;
       }
     }catch(e){console.error('[API] resetRecordScore failed:',e)}
+    return null;
   },
 
   // 导师管理
@@ -255,22 +267,19 @@ const Store = {
   _token(){return localStorage.getItem('quiz_mentor_token')||''},
   _setToken(t){localStorage.setItem('quiz_mentor_token',t)},
 
-  // 导师：同步全部记录（使用独立缓存，不与学员端混用）
+  // 导师：从服务器拉取全部记录（完全替换缓存，不合并）
   async syncAllRecords(){
-    const tk=this._token();
-    if(!tk)return;
+    const tk=this._token();if(!tk)return[];
     try{
       const res=await fetch(API_BASE+'/api/mentor/records?_='+Date.now(),{headers:{'x-mentor-token':tk}});
       const d=await res.json();
       if(d.success){
-        // 以服务端数据为准
         this._setMCache(d.records);
+        return d.records;
       }
     }catch(e){console.error('[API] syncAllRecords failed:',e)}
+    return this._getMCache();
   },
-
-  // 获取导师端记录
-  getMentorRecords(){return this._getMCache()},
 
   // 培训计划
   getPlan(){try{return JSON.parse(localStorage.getItem('quiz_plan')||'null')||DEFAULT_TRAINING_PLAN}catch(e){return DEFAULT_TRAINING_PLAN}},
@@ -299,11 +308,11 @@ function renderHeader(title,showBack,backRoute){
   </div></div>`
 }
 function renderQRCode(){
-  const url=window.location.href.split('#')[0];
+  const url='https://nova-haidong-quiz.onrender.com';
   return `<div class="qr-section">
     <img src="https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent(url)}" alt="扫码进入" width="180" height="180" style="border-radius:8px;border:1px solid var(--border)" onerror="this.style.display='none';this.nextElementSibling.style.display='block'">
     <div style="display:none;padding:12px;background:#f8fafc;border-radius:8px;font-size:12px;word-break:break-all;max-width:240px;margin:0 auto">${escapeHtml(url)}</div>
-    <p style="font-size:12px;color:var(--text-sec);margin-top:8px">扫码或分享链接进入答题</p>
+    <p style="font-size:12px;color:var(--text-sec);margin-top:8px">扫码或打开链接进入答题</p>
   </div>`
 }
 
@@ -585,6 +594,7 @@ async function submitQuiz(){
   if(quizTimer)clearInterval(quizTimer);
   const{examId,questions,answers,startTime}=quizState;
   const user=Store.getUser();
+  if(!user){showToast('请先登录','error');return}
   
   // 评分
   const questionScores={};
@@ -611,7 +621,6 @@ async function submitQuiz(){
     typeScores[q.type].max+=q.points;
   });
   
-  const hasShort=questions.some(q=>q.type==='short');
   const record={
     id:genId(),studentName:user.name,examId,examTitle:getExam(examId).title,
     answers:{...answers},questionScores,autoScore:totalScore,mentorScore:null,
@@ -620,10 +629,17 @@ async function submitQuiz(){
     duration:Math.round((Date.now()-startTime)/1000),
     typeScores,mentorScored:false,mentorScoreDetails:null,
   };
-  await Store.saveRecord(record);
+  
+  // 先POST到服务器，拿到服务器确认的record后再更新本地
+  const savedRecord=await Store.saveRecord(record);
   quizState=null;
-  showToast(`提交成功！得分：${totalScore}分`,totalScore>=CONFIG.passingScore?'success':'error');
-  navigate(`#/result/${record.id}`);
+  if(savedRecord){
+    showToast(`提交成功！得分：${totalScore}分`,totalScore>=CONFIG.passingScore?'success':'error');
+    navigate(`#/result/${savedRecord.id}`);
+  }else{
+    showToast('提交失败，请检查网络后重试','error');
+    navigate('#/exams');
+  }
 }
 
 function gradeShortAnswer(answer,keywords){
