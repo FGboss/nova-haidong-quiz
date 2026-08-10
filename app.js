@@ -261,6 +261,36 @@ const Store = {
     return null;
   },
 
+  // 删除单条记录
+  async deleteRecord(id){
+    const tk=this._token();if(!tk)return false;
+    try{
+      const res=await fetch(API_BASE+'/api/mentor/records/'+id,{method:'DELETE',headers:{'x-mentor-token':tk}});
+      const d=await res.json();
+      if(d.success){
+        const rs=this._getCache();this._setCache(rs.filter(r=>r.id!==id));
+        const ms=this._getMCache();this._setMCache(ms.filter(r=>r.id!==id));
+        return true;
+      }
+    }catch(e){console.error('[API] deleteRecord failed:',e)}
+    return false;
+  },
+
+  // 清空全部记录
+  async clearAllRecords(){
+    const tk=this._token();if(!tk)return false;
+    try{
+      const res=await fetch(API_BASE+'/api/mentor/records',{method:'DELETE',headers:{'x-mentor-token':tk}});
+      const d=await res.json();
+      if(d.success){
+        this._setCache([]);
+        this._setMCache([]);
+        return true;
+      }
+    }catch(e){console.error('[API] clearAllRecords failed:',e)}
+    return false;
+  },
+
   // 导师管理
   isMentor(){return localStorage.getItem('quiz_mentor')==='1'},
   setMentor(v){localStorage.setItem('quiz_mentor',v?'1':'0')},
@@ -903,7 +933,8 @@ function renderMentorRecords(){
           <option value="2" ${filterWeek==='2'?'selected':''}>Week 2</option>
           <option value="3" ${filterWeek==='3'?'selected':''}>Week 3</option>
         </select>
-        <button class="btn btn-outline btn-sm" onclick="window._recordFilterStudent='';window._recordFilterWeek='';renderMentorRecords()">重置</button>
+        <button class="btn btn-outline btn-sm" onclick="window._recordFilterStudent='';window._recordFilterWeek='';renderMentorRecords()">重置筛选</button>
+        <button class="btn btn-danger btn-sm" onclick="clearAllRecords()" style="margin-left:auto">🗑 清空全部记录</button>
       </div>
     </div>
     <div class="card">
@@ -922,7 +953,10 @@ function renderMentorRecords(){
             <td>${formatDuration(r.duration)}</td>
             <td>${formatDate(r.submitTime)}</td>
             <td>${r.mentorScored?'<span class="badge badge-info">已评</span>':'<span class="badge badge-gray">自动</span>'}</td>
-            <td><button class="btn btn-outline btn-sm" onclick="viewRecordDetail('${r.id}')">查看</button></td>
+            <td style="white-space:nowrap">
+              <button class="btn btn-outline btn-sm" onclick="viewRecordDetail('${r.id}')">查看</button>
+              <button class="btn btn-outline btn-sm" style="color:var(--danger);border-color:var(--danger)" onclick="deleteRecordById('${r.id}')">删除</button>
+            </td>
           </tr>`;
         }).join('')}</tbody>
       </table>
@@ -1377,6 +1411,32 @@ async function resetMentorScore(recordId){
   await Store.resetRecordScore(recordId);
   showToast('已重置为自动评分','info');
   renderMentorScoring();
+}
+
+// ===== 删除记录 =====
+async function deleteRecordById(recordId){
+  const r=Store.getRecord(recordId)||Store.getMentorRecords().find(x=>x.id===recordId);
+  if(!r)return;
+  if(!confirm(`确定要删除 ${r.studentName} 的 ${r.examTitle} 答题记录吗？\n\n此操作不可恢复。`))return;
+  const ok=await Store.deleteRecord(recordId);
+  if(ok){
+    showToast('已删除','success');
+    renderMentorRecords();
+  }else{
+    showToast('删除失败','error');
+  }
+}
+
+async function clearAllRecords(){
+  if(!confirm('确定要清空全部答题记录吗？\n\n此操作不可恢复，所有学员的答题记录将被永久删除。'))return;
+  if(!confirm('再次确认：真的要清空所有记录吗？'))return;
+  const ok=await Store.clearAllRecords();
+  if(ok){
+    showToast('已清空全部记录','success');
+    renderMentorDashboard('records');
+  }else{
+    showToast('清空失败','error');
+  }
 }
 
 // ===== 初始化 =====

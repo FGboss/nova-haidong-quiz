@@ -292,6 +292,29 @@ app.delete('/api/mentor/records/:id/score', (req, res) => {
   res.json({ success: true, record: records[idx] });
 });
 
+// 删除单条答题记录
+app.delete('/api/mentor/records/:id', (req, res) => {
+  const token = req.headers['x-mentor-token'];
+  if (!token || !token.startsWith('mentor_token_')) return res.status(401).json({ error: '未授权' });
+  const records = readJSON('records.json');
+  const idx = records.findIndex(r => r.id === req.params.id);
+  if (idx < 0) return res.status(404).json({ error: '记录不存在' });
+  const deleted = records.splice(idx, 1)[0];
+  writeJSON('records.json', records);
+  console.log('[records] Deleted:', deleted.studentName, deleted.examId, 'remaining:', records.length);
+  res.json({ success: true, deleted });
+});
+
+// 清空全部答题记录
+app.delete('/api/mentor/records', (req, res) => {
+  const token = req.headers['x-mentor-token'];
+  if (!token || !token.startsWith('mentor_token_')) return res.status(401).json({ error: '未授权' });
+  const count = readJSON('records.json').length;
+  writeJSON('records.json', []);
+  console.log('[records] Cleared all records, count was:', count);
+  res.json({ success: true, deletedCount: count });
+});
+
 app.get('/api/plan', (req, res) => {
   const plan = readObj('plan.json');
   res.json({ success: true, plan: Object.keys(plan).length > 0 ? plan : null });
