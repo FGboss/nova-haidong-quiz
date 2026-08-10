@@ -2,14 +2,43 @@ const express = require('express');
 const fs = require('fs');
 const path = require('path');
 const cors = require('cors');
+const { execSync } = require('child_process');
 
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: '5mb' }));
 app.use(express.static(path.join(__dirname)));
 
-const DATA_DIR = path.join(__dirname, '_data');
+const DATA_DIR = path.join(__dirname, 'data');
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+
+// Git auto-persist: commit and push data files to GitHub after writes
+let gitPending = false;
+let gitTimer = null;
+
+function gitPersist() {
+  // Debounce: batch multiple writes into one commit
+  if (gitPending) return;
+  gitPending = true;
+  clearTimeout(gitTimer);
+  gitTimer = setTimeout(() => {
+    try {
+      const gitDir = path.join(__dirname, '.git');
+      if (!fs.existsSync(gitDir)) { gitPending = false; return; }
+      execSync('git add data/', { cwd: __dirname, stdio: 'pipe', timeout: 10000 });
+      // Check if there are staged changes
+      const diff = execSync('git diff --cached --name-only', { cwd: __dirname, stdio: 'pipe', timeout: 5000 }).toString().trim();
+      if (diff) {
+        execSync(`git commit -m "data: auto-persist ${new Date().toISOString()}"`, { cwd: __dirname, stdio: 'pipe', timeout: 10000 });
+        execSync('git push', { cwd: __dirname, stdio: 'pipe', timeout: 15000 });
+        console.log('[git-persist] Data committed and pushed to GitHub');
+      }
+    } catch(e) {
+      console.error('[git-persist] Failed:', e.message);
+    }
+    gitPending = false;
+  }, 3000); // Wait 3 seconds for batching
+}
 
 function readJSON(filename) {
   const p = path.join(DATA_DIR, filename);
@@ -18,6 +47,7 @@ function readJSON(filename) {
 }
 function writeJSON(filename, data) {
   fs.writeFileSync(path.join(DATA_DIR, filename), JSON.stringify(data, null, 2));
+  gitPersist();
 }
 function readObj(filename) {
   const p = path.join(DATA_DIR, filename);
@@ -26,6 +56,7 @@ function readObj(filename) {
 }
 function writeObj(filename, data) {
   fs.writeFileSync(path.join(DATA_DIR, filename), JSON.stringify(data, null, 2));
+  gitPersist();
 }
 
 const MENTOR_PASSWORD = 'password123';
@@ -155,7 +186,7 @@ app.delete('/api/plan', (req, res) => {
   const token = req.headers['x-mentor-token'];
   if (!token || !token.startsWith('mentor_token_')) return res.status(401).json({ error: '未授权' });
   const p = path.join(DATA_DIR, 'plan.json');
-  if (fs.existsSync(p)) fs.unlinkSync(p);
+  if (fs.existsSync(p)) { fs.unlinkSync(p); gitPersist(); }
   res.json({ success: true });
 });
 
@@ -322,4 +353,9 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
   console.log('Server running on http://0.0.0.0:' + PORT);
   console.log('Quiz App: http://0.0.0.0:' + PORT + '/');
+  // Initialize git user config for auto-persist
+  try {
+    execSync('git config user.name "NovaQuizBot"', { cwd: __dirname, stdio: 'pipe' });
+    execSync('git config user.email "quiz@nova-haidong.local"', { cwd: __dirname, stdio: 'pipe' });
+  } catch(e) {}
 });

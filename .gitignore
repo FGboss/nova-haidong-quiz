@@ -1,5 +1,4 @@
 node_modules/
-_data/
 *.log
 .DS_Store
 .git
