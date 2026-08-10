@@ -1,4 +1,3 @@
-render: true
 services:
   - type: web
     name: nova-haidong-quiz
