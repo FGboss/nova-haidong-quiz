@@ -24,7 +24,10 @@ const GH_REPO = process.env.GH_REPO || 'FGboss/nova-haidong-quiz';
       execSync(`git remote set-url origin https://${tk}@github.com/${GH_REPO}.git`, { cwd: __dirname, stdio: 'pipe' });
       execSync('git config user.email "quiz-bot@nova.com"', { cwd: __dirname, stdio: 'pipe' });
       execSync('git config user.name "Nova Quiz Bot"', { cwd: __dirname, stdio: 'pipe' });
-      console.log('[setup] Git configured for auto-push');
+      // Pull latest data from GitHub, overwriting local with remote
+      execSync('git fetch origin master', { cwd: __dirname, stdio: 'pipe', timeout: 15000 });
+      execSync('git reset --hard origin/master -- data/', { cwd: __dirname, stdio: 'pipe', timeout: 10000 });
+      console.log('[setup] Git configured, latest data pulled from GitHub');
     }
   } catch(e) {
     console.log('[setup] Git config skipped:', e.message);
@@ -68,7 +71,7 @@ function gitPersist() {
     } else {
       console.log('[persist] No GH_TOKEN set, data saved locally only (will be lost on restart)');
     }
-  }, 3000);
+  }, 1000);
 }
 
 async function ghApiPersist() {
@@ -400,15 +403,6 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
   console.log('Server running on http://0.0.0.0:' + PORT);
   console.log('Quiz App: http://0.0.0.0:' + PORT + '/');
-  // Configure git for auto-persist
-  try {
-    execSync('git config user.name "NovaQuizBot"', { cwd: __dirname, stdio: 'pipe' });
-    execSync('git config user.email "quiz@nova.local"', { cwd: __dirname, stdio: 'pipe' });
-    // If GH_TOKEN is set, configure git remote with token
-    if (GH_TOKEN) {
-      execSync(`git remote set-url origin https://${GH_TOKEN}@github.com/${GH_REPO}.git`, { cwd: __dirname, stdio: 'pipe' });
-      console.log('[persist] Git remote configured with token');
-    }
-  } catch(e) {}
-  console.log('[persist] ' + (GH_TOKEN ? 'GitHub API enabled' : 'No GH_TOKEN - set in Render dashboard for data persistence'));
+  console.log('[persist] Data dir:', DATA_DIR);
+  console.log('[persist] Git push enabled, GitHub API fallback: ' + (GH_TOKEN ? 'yes' : 'no'));
 });
