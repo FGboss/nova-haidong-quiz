@@ -1,0 +1,13 @@
+node_modules/
+_data/
+*.log
+.DS_Store
+.git
+cloudflared
+*.so
+proxy_preload.*
+tcp_proxy_*
+cf_*
+test_*
+pinggy*
+tunnel*

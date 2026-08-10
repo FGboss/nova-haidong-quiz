@@ -1,0 +1,13 @@
+render: true
+services:
+  - type: web
+    name: nova-haidong-quiz
+    env: node
+    buildCommand: npm install
+    startCommand: node server.js
+    plan: free
+    healthCheckPath: /
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
