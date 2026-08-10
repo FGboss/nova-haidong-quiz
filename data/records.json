@@ -1,1 +1,138 @@
-[]
+[
+  {
+    "id": "r_1786327074404_qlzujc",
+    "studentName": "李雯锋",
+    "examId": "w1d1",
+    "examTitle": "W1-D1 日考",
+    "answers": {
+      "w1d1_q1": "",
+      "w1d1_q2": "",
+      "w1d1_q3": "",
+      "w1d1_q4": "",
+      "w1d1_q5": "",
+      "w1d1_q6": "",
+      "w1d1_q7": "",
+      "w1d1_q8": "",
+      "w1d1_q9": [],
+      "w1d1_q10": [],
+      "w1d1_q11": [],
+      "w1d1_q12": [],
+      "w1d1_q13": null,
+      "w1d1_q14": null,
+      "w1d1_q15": null,
+      "w1d1_q16": null,
+      "w1d1_q17": "",
+      "w1d1_q18": ""
+    },
+    "questionScores": {
+      "w1d1_q1": {
+        "score": 0,
+        "maxScore": 4
+      },
+      "w1d1_q2": {
+        "score": 0,
+        "maxScore": 4
+      },
+      "w1d1_q3": {
+        "score": 0,
+        "maxScore": 4
+      },
+      "w1d1_q4": {
+        "score": 0,
+        "maxScore": 4
+      },
+      "w1d1_q5": {
+        "score": 0,
+        "maxScore": 4
+      },
+      "w1d1_q6": {
+        "score": 0,
+        "maxScore": 4
+      },
+      "w1d1_q7": {
+        "score": 0,
+        "maxScore": 4
+      },
+      "w1d1_q8": {
+        "score": 0,
+        "maxScore": 4
+      },
+      "w1d1_q9": {
+        "score": 0,
+        "maxScore": 7
+      },
+      "w1d1_q10": {
+        "score": 0,
+        "maxScore": 7
+      },
+      "w1d1_q11": {
+        "score": 0,
+        "maxScore": 7
+      },
+      "w1d1_q12": {
+        "score": 0,
+        "maxScore": 7
+      },
+      "w1d1_q13": {
+        "score": 0,
+        "maxScore": 5
+      },
+      "w1d1_q14": {
+        "score": 0,
+        "maxScore": 5
+      },
+      "w1d1_q15": {
+        "score": 0,
+        "maxScore": 5
+      },
+      "w1d1_q16": {
+        "score": 0,
+        "maxScore": 5
+      },
+      "w1d1_q17": {
+        "score": 10,
+        "maxScore": 10
+      },
+      "w1d1_q18": {
+        "score": 10,
+        "maxScore": 10
+      }
+    },
+    "autoScore": 0,
+    "mentorScore": 20,
+    "finalScore": 20,
+    "passed": false,
+    "startTime": "2026-08-10T01:27:15.261Z",
+    "submitTime": "2026-08-10T01:57:54.404Z",
+    "duration": 1839,
+    "typeScores": {
+      "single": {
+        "score": 0,
+        "max": 32
+      },
+      "multiple": {
+        "score": 0,
+        "max": 28
+      },
+      "judge": {
+        "score": 0,
+        "max": 20
+      },
+      "short": {
+        "score": 20,
+        "max": 20
+      }
+    },
+    "mentorScored": true,
+    "mentorScoreDetails": {
+      "w1d1_q17": {
+        "autoScore": 0,
+        "mentorScore": 10
+      },
+      "w1d1_q18": {
+        "autoScore": 0,
+        "mentorScore": 10
+      }
+    }
+  }
+]
