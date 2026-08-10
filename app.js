@@ -185,24 +185,69 @@ const Store = {
   setUser(u){localStorage.setItem('quiz_user',JSON.stringify(u));fetch(API_BASE+'/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:u.name})}).catch(e=>{console.error('[API] login failed:',e)})},
   clearUser(){localStorage.removeItem('quiz_user')},
 
-  // 答题记录 - 本地缓存
+  // 答题记录 - 学员端本地缓存（与导师端隔离）
   _getCache(){try{return JSON.parse(localStorage.getItem('quiz_records')||'[]')}catch(e){return[]}},
   _setCache(rs){localStorage.setItem('quiz_records',JSON.stringify(rs))},
   getRecords(){return this._getCache()},
   getRecord(id){return this._getCache().find(r=>r.id===id)},
 
-  // 从云端同步学员记录
+  // 导师端独立缓存
+  _getMCache(){try{return JSON.parse(localStorage.getItem('quiz_mentor_records')||'[]')}catch(e){return[]}},
+  _setMCache(rs){localStorage.setItem('quiz_mentor_records',JSON.stringify(rs))},
+
+  // 从云端同步学员记录（以服务端数据为准，只保留本地未上传的）
   async syncRecords(name){
-    try{const res=await fetch(API_BASE+'/api/records/'+encodeURIComponent(name));const d=await res.json();
-    if(d.success){const local=this._getCache();const sid=new Set(d.records.map(r=>r.id));this._setCache([...d.records,...local.filter(r=>!sid.has(r.id))])}}catch(e){console.error('[API] syncRecords failed:',e)}
+    try{
+      const res=await fetch(API_BASE+'/api/records/'+encodeURIComponent(name)+'?_='+Date.now());
+      const d=await res.json();
+      if(d.success){
+        const local=this._getCache();
+        const sid=new Set(d.records.map(r=>r.id));
+        // 服务端记录 + 本地独有记录
+        this._setCache([...d.records,...local.filter(r=>!sid.has(r.id))]);
+      }
+    }catch(e){console.error('[API] syncRecords failed:',e)}
   },
 
-  // 保存记录（本地+云端）
-  async saveRecord(r){const rs=this._getCache();rs.push(r);this._setCache(rs);try{await fetch(API_BASE+'/api/records',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(r)})}catch(e){console.error('[API] saveRecord failed:',e)};},
+  // 保存记录（本地+云端），用服务端响应更新本地
+  async saveRecord(r){
+    const rs=this._getCache();
+    rs.push(r);
+    this._setCache(rs);
+    try{
+      const res=await fetch(API_BASE+'/api/records',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(r)});
+      const d=await res.json();
+      if(d.success&&d.record){
+        // 用服务端返回的record更新本地（确保ID一致）
+        const idx=rs.findIndex(x=>x.id===r.id);
+        if(idx>=0){rs[idx]=d.record;this._setCache(rs)}
+      }
+    }catch(e){console.error('[API] saveRecord failed:',e);showToast('同步失败，记录仅保存在本地','error')}
+  },
 
   // 更新记录（本地+云端，导师操作）
-  async updateRecord(id,updates){const rs=this._getCache();const i=rs.findIndex(r=>r.id===id);if(i>=0){rs[i]={...rs[i],...updates};this._setCache(rs)}const tk=this._token();if(tk){try{await fetch(API_BASE+'/api/mentor/records/'+id+'/score',{method:'PUT',headers:{'Content-Type':'application/json','x-mentor-token':tk},body:JSON.stringify(updates)})}catch(e){}}},
-  async resetRecordScore(id){const tk=this._token();if(!tk)return;try{const res=await fetch(API_BASE+'/api/mentor/records/'+id+'/score',{method:'DELETE',headers:{'x-mentor-token':tk}});const d=await res.json();if(d.success){const rs=this._getCache();const i=rs.findIndex(r=>r.id===id);if(i>=0){rs[i]=d.record;this._setCache(rs)}}}catch(e){}},
+  async updateRecord(id,updates){
+    const rs=this._getCache();const i=rs.findIndex(r=>r.id===id);
+    if(i>=0){rs[i]={...rs[i],...updates};this._setCache(rs)}
+    // 同时更新导师缓存
+    const ms=this._getMCache();const mi=ms.findIndex(r=>r.id===id);
+    if(mi>=0){ms[mi]={...ms[mi],...updates};this._setMCache(ms)}
+    const tk=this._token();
+    if(tk){try{await fetch(API_BASE+'/api/mentor/records/'+id+'/score',{method:'PUT',headers:{'Content-Type':'application/json','x-mentor-token':tk},body:JSON.stringify(updates)})}catch(e){console.error('[API] updateRecord failed:',e)}}
+  },
+  async resetRecordScore(id){
+    const tk=this._token();if(!tk)return;
+    try{
+      const res=await fetch(API_BASE+'/api/mentor/records/'+id+'/score',{method:'DELETE',headers:{'x-mentor-token':tk}});
+      const d=await res.json();
+      if(d.success){
+        const rs=this._getCache();const i=rs.findIndex(r=>r.id===id);
+        if(i>=0){rs[i]=d.record;this._setCache(rs)}
+        const ms=this._getMCache();const mi=ms.findIndex(r=>r.id===id);
+        if(mi>=0){ms[mi]=d.record;this._setMCache(ms)}
+      }
+    }catch(e){console.error('[API] resetRecordScore failed:',e)}
+  },
 
   // 导师管理
   isMentor(){return localStorage.getItem('quiz_mentor')==='1'},
@@ -210,14 +255,28 @@ const Store = {
   _token(){return localStorage.getItem('quiz_mentor_token')||''},
   _setToken(t){localStorage.setItem('quiz_mentor_token',t)},
 
-  // 导师：同步全部记录
-  async syncAllRecords(){const tk=this._token();if(!tk)return;try{const res=await fetch(API_BASE+'/api/mentor/records',{headers:{'x-mentor-token':tk}});const d=await res.json();if(d.success){const local=this._getCache();const sid=new Set(d.records.map(r=>r.id));this._setCache([...d.records,...local.filter(r=>!sid.has(r.id))])}}catch(e){console.error('[API] syncAllRecords failed:',e)};},
+  // 导师：同步全部记录（使用独立缓存，不与学员端混用）
+  async syncAllRecords(){
+    const tk=this._token();
+    if(!tk)return;
+    try{
+      const res=await fetch(API_BASE+'/api/mentor/records?_='+Date.now(),{headers:{'x-mentor-token':tk}});
+      const d=await res.json();
+      if(d.success){
+        // 以服务端数据为准
+        this._setMCache(d.records);
+      }
+    }catch(e){console.error('[API] syncAllRecords failed:',e)}
+  },
+
+  // 获取导师端记录
+  getMentorRecords(){return this._getMCache()},
 
   // 培训计划
   getPlan(){try{return JSON.parse(localStorage.getItem('quiz_plan')||'null')||DEFAULT_TRAINING_PLAN}catch(e){return DEFAULT_TRAINING_PLAN}},
-  savePlan(p){localStorage.setItem('quiz_plan',JSON.stringify(p));const tk=this._token();if(tk){fetch(API_BASE+'/api/plan',{method:'PUT',headers:{'Content-Type':'application/json','x-mentor-token':tk},body:JSON.stringify(p)}).catch(()=>{})}},
-  async syncPlan(){try{const res=await fetch(API_BASE+'/api/plan');const d=await res.json();if(d.success&&d.plan){localStorage.setItem('quiz_plan',JSON.stringify(d.plan))}}catch(e){}},
-  resetPlan(){localStorage.removeItem('quiz_plan');const tk=this._token();if(tk){fetch(API_BASE+'/api/plan',{method:'DELETE',headers:{'x-mentor-token':tk}}).catch(()=>{})}},
+  savePlan(p){localStorage.setItem('quiz_plan',JSON.stringify(p));const tk=this._token();if(tk){fetch(API_BASE+'/api/plan',{method:'PUT',headers:{'Content-Type':'application/json','x-mentor-token':tk},body:JSON.stringify(p)}).catch(e=>{console.error('[API] savePlan failed:',e)})}},
+  async syncPlan(){try{const res=await fetch(API_BASE+'/api/plan?_='+Date.now());const d=await res.json();if(d.success&&d.plan){localStorage.setItem('quiz_plan',JSON.stringify(d.plan))}}catch(e){console.error('[API] syncPlan failed:',e)}},
+  resetPlan(){localStorage.removeItem('quiz_plan');const tk=this._token();if(tk){fetch(API_BASE+'/api/plan',{method:'DELETE',headers:{'x-mentor-token':tk}}).catch(e=>{console.error('[API] resetPlan failed:',e)})}},
 };
 
 // ===== 工具函数 =====
@@ -714,7 +773,7 @@ async function renderMentorDashboard(tab){
 
 // ===== 数据看板 =====
 function renderMentorOverview(){
-  const records=Store.getRecords();
+  const records=Store.getMentorRecords();
   const students=[...new Set(records.map(r=>r.studentName))];
   const passed=records.filter(r=>r.passed);
   const totalExams=EXAMS.length;
@@ -803,7 +862,7 @@ function renderMentorOverview(){
 
 // ===== 答题记录（导师） =====
 function renderMentorRecords(){
-  const records=Store.getRecords().sort((a,b)=>new Date(b.submitTime)-new Date(a.submitTime));
+  const records=Store.getMentorRecords().sort((a,b)=>new Date(b.submitTime)-new Date(a.submitTime));
   // 获取筛选器值
   const filterStudent=window._recordFilterStudent||'';
   const filterWeek=window._recordFilterWeek||'';
@@ -1175,7 +1234,7 @@ function resetTrainingPlan(){
 
 // ===== 二次评分 =====
 function renderMentorScoring(){
-  const records=Store.getRecords();
+  const records=Store.getMentorRecords();
   // 找出含有简答题的记录
   const recordsWithShort=records.filter(r=>{
     const qs=getQuestions(r.examId);

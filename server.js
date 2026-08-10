@@ -183,10 +183,22 @@ app.post('/api/records', (req, res) => {
   const record = req.body;
   if (!record.studentName || !record.examId) return res.status(400).json({ error: '数据不完整' });
   const records = readJSON('records.json');
-  record.id = 'r_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
-  record.submitTime = new Date().toISOString();
+  // 保留客户端ID，不覆盖（避免ID不一致导致同步时重复）
+  if (!record.id) record.id = 'r_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+  record.submitTime = record.submitTime || new Date().toISOString();
+  // 去重：同一学员+同一考试+5秒内提交视为重复
+  const dup = records.find(r =>
+    r.studentName === record.studentName &&
+    r.examId === record.examId &&
+    Math.abs(new Date(r.submitTime).getTime() - new Date(record.submitTime).getTime()) < 5000
+  );
+  if (dup) {
+    console.log('[dedup] Duplicate submission detected, returning existing record');
+    return res.json({ success: true, record: dup, deduped: true });
+  }
   records.push(record);
   writeJSON('records.json', records);
+  console.log('[records] New record saved:', record.studentName, record.examId, 'total:', records.length);
   res.json({ success: true, record });
 });
 
