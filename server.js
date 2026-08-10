@@ -12,32 +12,101 @@ app.use(express.static(path.join(__dirname)));
 const DATA_DIR = path.join(__dirname, 'data');
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 
-// Git auto-persist: commit and push data files to GitHub after writes
-let gitPending = false;
-let gitTimer = null;
+const GH_TOKEN = process.env.GH_TOKEN || '';
+const GH_REPO = process.env.GH_REPO || 'FGboss/nova-haidong-quiz';
+
+// Persistence: try git push first, fall back to GitHub API
+let persistPending = false;
+let persistTimer = null;
 
 function gitPersist() {
-  // Debounce: batch multiple writes into one commit
-  if (gitPending) return;
-  gitPending = true;
-  clearTimeout(gitTimer);
-  gitTimer = setTimeout(() => {
+  if (persistPending) return;
+  persistPending = true;
+  clearTimeout(persistTimer);
+  persistTimer = setTimeout(async () => {
+    persistPending = false;
+    // Strategy 1: Try git push (works if Render has git credentials)
     try {
       const gitDir = path.join(__dirname, '.git');
-      if (!fs.existsSync(gitDir)) { gitPending = false; return; }
-      execSync('git add data/', { cwd: __dirname, stdio: 'pipe', timeout: 10000 });
-      // Check if there are staged changes
-      const diff = execSync('git diff --cached --name-only', { cwd: __dirname, stdio: 'pipe', timeout: 5000 }).toString().trim();
-      if (diff) {
-        execSync(`git commit -m "data: auto-persist ${new Date().toISOString()}"`, { cwd: __dirname, stdio: 'pipe', timeout: 10000 });
-        execSync('git push', { cwd: __dirname, stdio: 'pipe', timeout: 15000 });
-        console.log('[git-persist] Data committed and pushed to GitHub');
+      if (fs.existsSync(gitDir)) {
+        execSync('git add data/', { cwd: __dirname, stdio: 'pipe', timeout: 10000 });
+        const diff = execSync('git diff --cached --name-only', { cwd: __dirname, stdio: 'pipe', timeout: 5000 }).toString().trim();
+        if (diff) {
+          execSync(`git commit -m "data: auto-persist"`, { cwd: __dirname, stdio: 'pipe', timeout: 10000 });
+          execSync('git push', { cwd: __dirname, stdio: 'pipe', timeout: 15000 });
+          console.log('[persist] Git push OK');
+          return;
+        }
       }
     } catch(e) {
-      console.error('[git-persist] Failed:', e.message);
+      console.log('[persist] Git push failed, trying GitHub API...');
     }
-    gitPending = false;
-  }, 3000); // Wait 3 seconds for batching
+    // Strategy 2: Use GitHub API with token
+    if (GH_TOKEN) {
+      try {
+        await ghApiPersist();
+      } catch(e) {
+        console.error('[persist] GitHub API failed:', e.message);
+      }
+    } else {
+      console.log('[persist] No GH_TOKEN set, data saved locally only (will be lost on restart)');
+    }
+  }, 3000);
+}
+
+async function ghApiPersist() {
+  const https = require('https');
+  const files = ['records.json', 'users.json', 'plan.json', 'question_overrides.json'];
+  for (const f of files) {
+    const p = path.join(DATA_DIR, f);
+    if (!fs.existsSync(p)) continue;
+    const content = fs.readFileSync(p, 'utf8');
+    // Get current SHA
+    const sha = await new Promise((resolve) => {
+      const req = https.get({
+        hostname: 'api.github.com',
+        path: `/repos/${GH_REPO}/contents/data/${f}`,
+        headers: {
+          'User-Agent': 'NovaQuiz/1.0',
+          'Authorization': `token ${GH_TOKEN}`,
+          'Accept': 'application/vnd.github.v3+json'
+        }
+      }, (res) => {
+        let b = '';
+        res.on('data', d => b += d);
+        res.on('end', () => {
+          try { resolve(JSON.parse(b).sha || null); } catch(e) { resolve(null); }
+        });
+      });
+      req.on('error', () => resolve(null));
+    });
+    // Update file
+    const body = JSON.stringify({
+      message: 'data: auto-persist',
+      content: Buffer.from(content).toString('base64'),
+      ...(sha ? { sha } : {})
+    });
+    await new Promise((resolve) => {
+      const req = https.request({
+        hostname: 'api.github.com',
+        path: `/repos/${GH_REPO}/contents/data/${f}`,
+        method: 'PUT',
+        headers: {
+          'User-Agent': 'NovaQuiz/1.0',
+          'Authorization': `token ${GH_TOKEN}`,
+          'Accept': 'application/vnd.github.v3+json',
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(body)
+        }
+      }, (res) => {
+        console.log(`[persist] GitHub API: data/${f} → HTTP ${res.statusCode}`);
+        resolve();
+      });
+      req.on('error', (e) => { console.error(`[persist] ${f}: ${e.message}`); resolve(); });
+      req.write(body);
+      req.end();
+    });
+  }
 }
 
 function readJSON(filename) {
@@ -63,7 +132,6 @@ const MENTOR_PASSWORD = 'password123';
 
 // ===== Student APIs =====
 
-// Login/Register
 app.post('/api/login', (req, res) => {
   const { name } = req.body;
   if (!name || !name.trim()) return res.status(400).json({ error: '请输入姓名' });
@@ -78,7 +146,6 @@ app.post('/api/login', (req, res) => {
   res.json({ success: true, user });
 });
 
-// Get all exams metadata
 app.get('/api/exams', (req, res) => {
   const appJs = fs.readFileSync(path.join(__dirname, 'app.js'), 'utf8');
   const match = appJs.match(/const EXAMS = (\[[\s\S]*?\]);/);
@@ -86,14 +153,12 @@ app.get('/api/exams', (req, res) => {
   res.json({ success: true, exams });
 });
 
-// Get student's records
 app.get('/api/records/:studentName', (req, res) => {
   const records = readJSON('records.json');
   const studentRecords = records.filter(r => r.studentName === req.params.studentName);
   res.json({ success: true, records: studentRecords });
 });
 
-// Submit a quiz result
 app.post('/api/records', (req, res) => {
   const record = req.body;
   if (!record.studentName || !record.examId) return res.status(400).json({ error: '数据不完整' });
@@ -107,14 +172,12 @@ app.post('/api/records', (req, res) => {
 
 // ===== Mentor APIs =====
 
-// Mentor login
 app.post('/api/mentor/login', (req, res) => {
   const { password } = req.body;
   if (password !== MENTOR_PASSWORD) return res.status(401).json({ error: '密码错误' });
   res.json({ success: true, token: 'mentor_token_' + Date.now() });
 });
 
-// Get all records (mentor only)
 app.get('/api/mentor/records', (req, res) => {
   const token = req.headers['x-mentor-token'];
   if (!token || !token.startsWith('mentor_token_')) return res.status(401).json({ error: '未授权' });
@@ -122,7 +185,6 @@ app.get('/api/mentor/records', (req, res) => {
   res.json({ success: true, records });
 });
 
-// Get a specific record detail
 app.get('/api/mentor/records/:id', (req, res) => {
   const token = req.headers['x-mentor-token'];
   if (!token || !token.startsWith('mentor_token_')) return res.status(401).json({ error: '未授权' });
@@ -132,7 +194,6 @@ app.get('/api/mentor/records/:id', (req, res) => {
   res.json({ success: true, record });
 });
 
-// Mentor scoring
 app.put('/api/mentor/records/:id/score', (req, res) => {
   const token = req.headers['x-mentor-token'];
   if (!token || !token.startsWith('mentor_token_')) return res.status(401).json({ error: '未授权' });
@@ -151,7 +212,6 @@ app.put('/api/mentor/records/:id/score', (req, res) => {
   res.json({ success: true, record: records[idx] });
 });
 
-// Reset mentor score
 app.delete('/api/mentor/records/:id/score', (req, res) => {
   const token = req.headers['x-mentor-token'];
   if (!token || !token.startsWith('mentor_token_')) return res.status(401).json({ error: '未授权' });
@@ -167,13 +227,11 @@ app.delete('/api/mentor/records/:id/score', (req, res) => {
   res.json({ success: true, record: records[idx] });
 });
 
-// Get training plan
 app.get('/api/plan', (req, res) => {
   const plan = readObj('plan.json');
   res.json({ success: true, plan: Object.keys(plan).length > 0 ? plan : null });
 });
 
-// Save training plan
 app.put('/api/plan', (req, res) => {
   const token = req.headers['x-mentor-token'];
   if (!token || !token.startsWith('mentor_token_')) return res.status(401).json({ error: '未授权' });
@@ -181,7 +239,6 @@ app.put('/api/plan', (req, res) => {
   res.json({ success: true });
 });
 
-// Reset training plan
 app.delete('/api/plan', (req, res) => {
   const token = req.headers['x-mentor-token'];
   if (!token || !token.startsWith('mentor_token_')) return res.status(401).json({ error: '未授权' });
@@ -190,7 +247,6 @@ app.delete('/api/plan', (req, res) => {
   res.json({ success: true });
 });
 
-// Get all students (mentor)
 app.get('/api/mentor/students', (req, res) => {
   const token = req.headers['x-mentor-token'];
   if (!token || !token.startsWith('mentor_token_')) return res.status(401).json({ error: '未授权' });
@@ -200,7 +256,6 @@ app.get('/api/mentor/students', (req, res) => {
 
 // ===== 题库管理 =====
 
-// Load all questions from JS files
 function loadBaseQuestions() {
   const questions = [];
   ['week1_questions.js', 'week2_questions.js', 'week3_questions.js'].forEach(file => {
@@ -216,7 +271,6 @@ function loadBaseQuestions() {
       }
     }
   });
-  // Normalize
   questions.forEach(q => {
     if (!q.options || !Array.isArray(q.options)) q.options = [];
     if (q.answer === undefined) q.answer = '';
@@ -227,14 +281,12 @@ function loadBaseQuestions() {
   return questions;
 }
 
-// Get all questions with overrides applied
 function getAllQuestions() {
   const base = loadBaseQuestions();
   const overrides = readObj('question_overrides.json');
   return base.map(q => overrides[q.id] ? { ...q, ...overrides[q.id] } : q);
 }
 
-// Grade a short answer
 function gradeShortAnswer(answer, keywords) {
   if (!answer || !answer.trim()) return 0;
   const ks = keywords.split(',').map(k => k.trim().toLowerCase()).filter(k => k);
@@ -245,7 +297,6 @@ function gradeShortAnswer(answer, keywords) {
   return Math.round((matched / ks.length) * 10);
 }
 
-// Regrade records for a specific exam
 function regradeRecords(examId) {
   const questions = getAllQuestions().filter(q => q.examId === examId);
   const records = readJSON('records.json');
@@ -255,14 +306,12 @@ function regradeRecords(examId) {
     if (record.examId !== examId) return;
     
     const questionScores = {};
-    let autoScore = 0;
-    let finalScore = 0;
+    let autoScore = 0, finalScore = 0;
     let typeScores = { single: {score:0,max:0}, multiple: {score:0,max:0}, judge: {score:0,max:0}, short: {score:0,max:0} };
     
     questions.forEach(q => {
       const userAnswer = record.answers ? record.answers[q.id] : undefined;
-      let autoQScore = 0;
-      let finalQScore = 0;
+      let autoQScore = 0, finalQScore = 0;
       
       if (q.type === 'single') {
         autoQScore = userAnswer === q.answer ? q.points : 0;
@@ -277,11 +326,8 @@ function regradeRecords(examId) {
         finalQScore = autoQScore;
       } else if (q.type === 'short') {
         autoQScore = gradeShortAnswer(userAnswer, q.answer);
-        if (record.mentorScored && record.mentorScoreDetails && record.mentorScoreDetails[q.id]) {
-          finalQScore = record.mentorScoreDetails[q.id].mentorScore;
-        } else {
-          finalQScore = autoQScore;
-        }
+        finalQScore = (record.mentorScored && record.mentorScoreDetails && record.mentorScoreDetails[q.id])
+          ? record.mentorScoreDetails[q.id].mentorScore : autoQScore;
       }
       
       questionScores[q.id] = { score: finalQScore, maxScore: q.points };
@@ -295,11 +341,8 @@ function regradeRecords(examId) {
     records[idx].autoScore = autoScore;
     records[idx].typeScores = typeScores;
     records[idx].finalScore = finalScore;
-    if (record.mentorScored) {
-      records[idx].mentorScore = typeScores.short.score;
-    }
+    if (record.mentorScored) records[idx].mentorScore = typeScores.short.score;
     records[idx].passed = finalScore >= 90;
-    
     regraded++;
   });
   
@@ -307,55 +350,48 @@ function regradeRecords(examId) {
   return regraded;
 }
 
-// Get all questions (with overrides)
 app.get('/api/questions', (req, res) => {
-  const questions = getAllQuestions();
-  res.json({ success: true, questions });
+  res.json({ success: true, questions: getAllQuestions() });
 });
 
-// Update a question (mentor only)
 app.put('/api/mentor/questions/:id', (req, res) => {
   const token = req.headers['x-mentor-token'];
   if (!token || !token.startsWith('mentor_token_')) return res.status(401).json({ error: '未授权' });
   
   const questionId = req.params.id;
   const updates = req.body;
-  
-  // Load existing overrides
   const overrides = readObj('question_overrides.json');
-  
-  // Find the base question
   const baseQuestions = loadBaseQuestions();
   const baseQ = baseQuestions.find(q => q.id === questionId);
   if (!baseQ) return res.status(404).json({ error: '题目不存在' });
   
-  // Merge with existing override
   const existingOverride = overrides[questionId] || {};
   overrides[questionId] = { ...existingOverride, ...updates, id: questionId };
   writeObj('question_overrides.json', overrides);
   
-  // Get the updated question
   const updatedQ = { ...baseQ, ...overrides[questionId] };
-  
-  // Regrade all records for this exam
   const regradedCount = regradeRecords(updatedQ.examId);
   
   res.json({ success: true, question: updatedQ, regradedCount });
 });
 
-// Get question overrides
 app.get('/api/questions/overrides', (req, res) => {
-  const overrides = readObj('question_overrides.json');
-  res.json({ success: true, overrides });
+  res.json({ success: true, overrides: readObj('question_overrides.json') });
 });
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
   console.log('Server running on http://0.0.0.0:' + PORT);
   console.log('Quiz App: http://0.0.0.0:' + PORT + '/');
-  // Initialize git user config for auto-persist
+  // Configure git for auto-persist
   try {
     execSync('git config user.name "NovaQuizBot"', { cwd: __dirname, stdio: 'pipe' });
-    execSync('git config user.email "quiz@nova-haidong.local"', { cwd: __dirname, stdio: 'pipe' });
+    execSync('git config user.email "quiz@nova.local"', { cwd: __dirname, stdio: 'pipe' });
+    // If GH_TOKEN is set, configure git remote with token
+    if (GH_TOKEN) {
+      execSync(`git remote set-url origin https://${GH_TOKEN}@github.com/${GH_REPO}.git`, { cwd: __dirname, stdio: 'pipe' });
+      console.log('[persist] Git remote configured with token');
+    }
   } catch(e) {}
+  console.log('[persist] ' + (GH_TOKEN ? 'GitHub API enabled' : 'No GH_TOKEN - set in Render dashboard for data persistence'));
 });
