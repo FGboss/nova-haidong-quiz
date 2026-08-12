@@ -238,10 +238,12 @@ const Store = {
       if(d.success&&d.record){
         // 更新学员缓存
         const rs=this._getCache();const i=rs.findIndex(r=>r.id===id);
-        if(i>=0){rs[i]=d.record;this._setCache(rs)}
-        // 更新导师缓存
+        if(i>=0){rs[i]=d.record}else{rs.push(d.record)}
+        this._setCache(rs);
+        // 更新导师缓存（始终更新，即使记录不在缓存中也添加）
         const ms=this._getMCache();const mi=ms.findIndex(r=>r.id===id);
-        if(mi>=0){ms[mi]=d.record;this._setMCache(ms)}
+        if(mi>=0){ms[mi]=d.record}else{ms.push(d.record)}
+        this._setMCache(ms);
         return d.record;
       }
     }catch(e){console.error('[API] updateRecord failed:',e)}
@@ -254,9 +256,11 @@ const Store = {
       const d=await res.json();
       if(d.success&&d.record){
         const rs=this._getCache();const i=rs.findIndex(r=>r.id===id);
-        if(i>=0){rs[i]=d.record;this._setCache(rs)}
+        if(i>=0){rs[i]=d.record}else{rs.push(d.record)}
+        this._setCache(rs);
         const ms=this._getMCache();const mi=ms.findIndex(r=>r.id===id);
-        if(mi>=0){ms[mi]=d.record;this._setMCache(ms)}
+        if(mi>=0){ms[mi]=d.record}else{ms.push(d.record)}
+        this._setMCache(ms);
         return d.record;
       }
     }catch(e){console.error('[API] resetRecordScore failed:',e)}
@@ -1380,32 +1384,37 @@ async function saveMentorScore(recordId){
   const r=Store.getAnyRecord(recordId);
   if(!r){showToast('未找到该记录，请刷新后重试','error');return;}
   const questions=getQuestions(r.examId).filter(q=>q.type==='short');
+  if(questions.length===0){showToast('该考试无简答题','error');return;}
   let mentorScoreDetails={};
   // autoScore 已包含所有题目的自动评分（含简答题自动评分）
-  let totalScore=r.autoScore;
+  let totalScore=Number(r.autoScore)||0;
   let shortScore=0,shortMax=0;
   // 深拷贝 questionScores 和 typeScores，避免直接修改缓存对象
-  const newQuestionScores={...r.questionScores};
+  const newQuestionScores={...(r.questionScores||{})};
   const newTypeScores={
-    single:{...r.typeScores?.single||{score:0,max:0}},
-    multiple:{...r.typeScores?.multiple||{score:0,max:0}},
-    judge:{...r.typeScores?.judge||{score:0,max:0}},
+    single:{...(r.typeScores?.single||{score:0,max:0})},
+    multiple:{...(r.typeScores?.multiple||{score:0,max:0})},
+    judge:{...(r.typeScores?.judge||{score:0,max:0})},
     short:{score:0,max:0}
   };
   
   questions.forEach(q=>{
-    const oldScore=r.questionScores[q.id]?.score||0;
+    const oldScore=Number(r.questionScores?.[q.id]?.score)||0;
     const input=$(`#score_${recordId}_${q.id}`);
-    const newScore=Math.max(0,Math.min(q.points,parseFloat(input?.value||0)));
+    const rawVal=parseFloat(input?.value);
+    const newScore=isNaN(rawVal)?oldScore:Math.max(0,Math.min(Number(q.points)||0,rawVal));
     // 原始自动评分：如果之前评过分，从 mentorScoreDetails 取原始 autoScore
     const originalAutoScore=(r.mentorScored&&r.mentorScoreDetails&&r.mentorScoreDetails[q.id])
       ?r.mentorScoreDetails[q.id].autoScore:oldScore;
     mentorScoreDetails[q.id]={autoScore:originalAutoScore,mentorScore:newScore};
     totalScore=totalScore-oldScore+newScore;
     shortScore+=newScore;
-    shortMax+=q.points;
-    newQuestionScores[q.id]={score:newScore,maxScore:q.points};
+    shortMax+=Number(q.points)||0;
+    newQuestionScores[q.id]={score:newScore,maxScore:Number(q.points)||0};
   });
+  
+  // 防止 NaN
+  if(isNaN(totalScore)){showToast('分数计算出错，请刷新后重试','error');return;}
   
   newTypeScores.short={score:shortScore,max:shortMax};
   
@@ -1421,6 +1430,8 @@ async function saveMentorScore(recordId){
   if(!result){showToast('保存失败，请检查网络后重试','error');return;}
   const objectiveScore=totalScore-shortScore;
   showToast(`评分已保存，最终分数：${totalScore}分（客观题${objectiveScore}分 + 简答题${shortScore}分）`,'success');
+  // 保存后重新从服务器同步全部数据，确保导师缓存和服务器一致
+  await Store.syncAllRecords();
   renderMentorScoring();
 }
 
