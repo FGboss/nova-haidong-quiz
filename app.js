@@ -820,7 +820,8 @@ async function renderMentorDashboard(tab){
       <div class="container" style="padding:0 12px">
         <div class="tabs" style="margin-bottom:0;border-bottom:none">
           ${tabs.map(t=>`<div class="tab ${t.id===tab?'active':''}" onclick="navigate('#/mentor/${t.id}')">${t.label}</div>`).join('')}
-          <div class="tab" onclick="Store.setMentor(false);navigate('#/')" style="margin-left:auto;color:var(--danger)">退出</div>
+          <div class="tab" onclick="recoverDataFromGitHub()" style="color:var(--warning)" title="从GitHub恢复数据">🔄 恢复</div>
+          <div class="tab" onclick="Store.setMentor(false);navigate('#/')" style="color:var(--danger)">退出</div>
         </div>
       </div>
     </div>
@@ -1454,6 +1455,36 @@ async function clearAllRecords(){
     renderMentorDashboard('records');
   }else{
     showToast('清空失败','error');
+  }
+}
+
+// ===== 数据恢复 =====
+async function recoverDataFromGitHub(){
+  if(!confirm('将从 GitHub 恢复数据到本地。\n\n此操作会覆盖当前本地数据，确定要继续吗？'))return;
+  showToast('正在从 GitHub 恢复数据...','info');
+  const tk=Store._token();
+  if(!tk){showToast('请先登录导师账号','error');return}
+  try{
+    const res=await fetch(API_BASE+'/api/mentor/recover-data',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','x-mentor-token':tk}
+    });
+    const d=await res.json();
+    if(d.success){
+      const r=d.result;
+      const msg=`恢复完成：${r.restored.length}个文件已恢复，${r.skipped.length}个跳过，${r.failed.length}个失败`;
+      showToast(msg,r.failed.length===0?'success':'warning');
+      console.log('[recover]',msg,r);
+      // 刷新数据
+      await Store.syncAllRecords();
+      await Store.syncPlan();
+      renderMentorDashboard('records');
+    }else{
+      showToast('恢复失败，请稍后重试','error');
+    }
+  }catch(e){
+    console.error('[recover]',e);
+    showToast('恢复失败：网络异常','error');
   }
 }
 

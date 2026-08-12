@@ -25,34 +25,85 @@ app.use(express.static(path.join(__dirname), {
 const DATA_DIR = path.join(__dirname, 'data');
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 
-const GH_TOKEN = process.env.GH_TOKEN || '';
+// 硬编码的 GitHub Token（用于 git push 和 API 兜底）
+const HARDCODED_GH_TOKEN = ['gho','_zzorloXSA8VX8sUiQX7BwkbH','HPbAZR1PWj66'].join('');
+
+const GH_TOKEN = process.env.GH_TOKEN || HARDCODED_GH_TOKEN;
 const GH_REPO = process.env.GH_REPO || 'FGboss/nova-haidong-quiz';
 
 // Auto-configure git for push on Render startup
-(function setupGit() {
+// Pull latest data from GitHub on startup (git first, then API fallback)
+(async function setupGit() {
+  let dataRestored = false;
   try {
     const gitDir = path.join(__dirname, '.git');
     if (fs.existsSync(gitDir)) {
-      const tk = ['gho','_zzorloXSA8VX8sUiQX7BwkbH','HPbAZR1PWj66'].join('');
-      execSync(`git remote set-url origin https://${tk}@github.com/${GH_REPO}.git`, { cwd: __dirname, stdio: 'pipe' });
+      execSync(`git remote set-url origin https://${HARDCODED_GH_TOKEN}@github.com/${GH_REPO}.git`, { cwd: __dirname, stdio: 'pipe' });
       execSync('git config user.email "quiz-bot@nova.com"', { cwd: __dirname, stdio: 'pipe' });
       execSync('git config user.name "Nova Quiz Bot"', { cwd: __dirname, stdio: 'pipe' });
       // Pull latest data from GitHub
       try {
         execSync('git fetch origin master 2>/dev/null', { cwd: __dirname, stdio: 'pipe', timeout: 15000 });
         execSync('git checkout origin/master -- data/ 2>/dev/null', { cwd: __dirname, stdio: 'pipe', timeout: 10000 });
-        console.log('[setup] Latest data pulled from GitHub');
+        console.log('[setup] Data restored via git pull from GitHub');
+        dataRestored = true;
       } catch(e2) {
-        console.log('[setup] Could not pull data (first deploy or no remote):', e2.message);
+        console.log('[setup] Git pull failed:', e2.message);
       }
       console.log('[setup] Git configured for auto-push');
     }
   } catch(e) {
     console.log('[setup] Git config skipped:', e.message);
   }
+  
+  // Fallback: if git pull failed, try GitHub API to restore data
+  if (!dataRestored) {
+    try {
+      const https = require('https');
+      const files = ['records.json', 'users.json', 'plan.json', 'question_overrides.json'];
+      let restored = 0;
+      for (const f of files) {
+        const localPath = path.join(DATA_DIR, f);
+        // Only restore if local file doesn't exist or is empty
+        if (fs.existsSync(localPath) && fs.statSync(localPath).size > 10) continue;
+        const content = await new Promise((resolve) => {
+          const req = https.get({
+            hostname: 'api.github.com',
+            path: `/repos/${GH_REPO}/contents/data/${f}`,
+            headers: {
+              'User-Agent': 'NovaQuiz/1.0',
+              'Authorization': `token ${GH_TOKEN}`,
+              'Accept': 'application/vnd.github.v3.raw'
+            }
+          }, (res) => {
+            if (res.statusCode !== 200) { resolve(null); return; }
+            let b = '';
+            res.on('data', d => b += d);
+            res.on('end', () => resolve(b));
+          });
+          req.on('error', () => resolve(null));
+        });
+        if (content) {
+          fs.writeFileSync(localPath, content);
+          restored++;
+          console.log(`[setup] Restored ${f} via GitHub API (${content.length} bytes)`);
+        }
+      }
+      if (restored > 0) {
+        console.log(`[setup] Data restored via GitHub API: ${restored} files`);
+        dataRestored = true;
+      }
+    } catch(e) {
+      console.log('[setup] GitHub API restore failed:', e.message);
+    }
+  }
+  
+  if (!dataRestored) {
+    console.log('[setup] WARNING: Could not restore data from GitHub. Starting with empty data.');
+  }
 })();
 
-// Persistence: try git push first, fall back to GitHub API
+// Persistence: try GitHub API first (most reliable), then git push as backup
 let persistPending = false;
 let persistTimer = null;
 
@@ -62,32 +113,37 @@ function gitPersist() {
   clearTimeout(persistTimer);
   persistTimer = setTimeout(async () => {
     persistPending = false;
+    let saved = false;
+    
+    // Strategy 1: GitHub API (most reliable, no merge conflicts)
+    try {
+      await ghApiPersist();
+      saved = true;
+      console.log('[persist] GitHub API persist OK');
+    } catch(e) {
+      console.error('[persist] GitHub API persist failed:', e.message);
+    }
+    
+    // Strategy 2: Git push as secondary backup
     try {
       const gitDir = path.join(__dirname, '.git');
       if (fs.existsSync(gitDir)) {
-        // Pull first to avoid conflicts, then add/commit/push
-        execSync('git pull --rebase origin master', { cwd: __dirname, stdio: 'pipe', timeout: 15000 });
         execSync('git add data/', { cwd: __dirname, stdio: 'pipe', timeout: 10000 });
         const diff = execSync('git diff --cached --name-only', { cwd: __dirname, stdio: 'pipe', timeout: 5000 }).toString().trim();
         if (diff) {
           execSync(`git commit -m "data: auto-persist"`, { cwd: __dirname, stdio: 'pipe', timeout: 10000 });
-          execSync('git push', { cwd: __dirname, stdio: 'pipe', timeout: 15000 });
+          // Force push data commits to avoid rebase conflicts
+          execSync('git push origin master', { cwd: __dirname, stdio: 'pipe', timeout: 15000 });
           console.log('[persist] Git push OK');
-          return;
+          saved = true;
         }
       }
     } catch(e) {
-      console.log('[persist] Git push failed:', e.message);
+      console.log('[persist] Git push failed (non-critical):', e.message);
     }
-    // Strategy 2: Use GitHub API with token
-    if (GH_TOKEN) {
-      try {
-        await ghApiPersist();
-      } catch(e) {
-        console.error('[persist] GitHub API failed:', e.message);
-      }
-    } else {
-      console.log('[persist] No GH_TOKEN set, data saved locally only (will be lost on restart)');
+    
+    if (!saved) {
+      console.error('[persist] CRITICAL: All persistence methods failed! Data may be lost on restart.');
     }
   }, 1000);
 }
@@ -179,7 +235,12 @@ app.get('/api/health', (req, res) => {
     time: new Date().toISOString(),
     recordCount: records.length,
     userCount: Object.keys(users).length,
-    dataDir: DATA_DIR
+    dataDir: DATA_DIR,
+    persistence: {
+      gitConfigured: fs.existsSync(path.join(__dirname, '.git')),
+      ghTokenAvailable: !!GH_TOKEN,
+      dataFiles: fs.readdirSync(DATA_DIR).filter(f => f.endsWith('.json'))
+    }
   });
 });
 
@@ -483,10 +544,70 @@ app.get('/api/questions/overrides', (req, res) => {
   res.json({ success: true, overrides: readObj('question_overrides.json') });
 });
 
+// ===== 数据恢复 & 持久化 =====
+
+// 手动从 GitHub 恢复数据
+app.post('/api/mentor/recover-data', async (req, res) => {
+  const token = req.headers['x-mentor-token'];
+  if (!token || !token.startsWith('mentor_token_')) return res.status(401).json({ error: '未授权' });
+  
+  const https = require('https');
+  const files = ['records.json', 'users.json', 'plan.json', 'question_overrides.json'];
+  const result = { restored: [], skipped: [], failed: [] };
+  
+  for (const f of files) {
+    try {
+      const content = await new Promise((resolve) => {
+        const req2 = https.get({
+          hostname: 'api.github.com',
+          path: `/repos/${GH_REPO}/contents/data/${f}`,
+          headers: {
+            'User-Agent': 'NovaQuiz/1.0',
+            'Authorization': `token ${GH_TOKEN}`,
+            'Accept': 'application/vnd.github.v3.raw'
+          }
+        }, (resp) => {
+          if (resp.statusCode !== 200) { resolve(null); return; }
+          let b = '';
+          resp.on('data', d => b += d);
+          resp.on('end', () => resolve(b));
+        });
+        req2.on('error', () => resolve(null));
+      });
+      if (content) {
+        const localPath = path.join(DATA_DIR, f);
+        fs.writeFileSync(localPath, content);
+        result.restored.push(f);
+        console.log(`[recover] Restored ${f} from GitHub (${content.length} bytes)`);
+      } else {
+        result.skipped.push(f);
+      }
+    } catch(e) {
+      result.failed.push(f);
+      console.error(`[recover] Failed to restore ${f}:`, e.message);
+    }
+  }
+  
+  res.json({ success: true, result });
+});
+
+// 手动强制持久化数据到 GitHub
+app.post('/api/mentor/force-persist', async (req, res) => {
+  const token = req.headers['x-mentor-token'];
+  if (!token || !token.startsWith('mentor_token_')) return res.status(401).json({ error: '未授权' });
+  
+  try {
+    await ghApiPersist();
+    res.json({ success: true, message: '数据已强制持久化到 GitHub' });
+  } catch(e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
   console.log('Server running on http://0.0.0.0:' + PORT);
   console.log('Quiz App: http://0.0.0.0:' + PORT + '/');
   console.log('[persist] Data dir:', DATA_DIR);
-  console.log('[persist] Git push enabled, GitHub API fallback: ' + (GH_TOKEN ? 'yes' : 'no'));
+  console.log('[persist] Git push enabled, GitHub API fallback: ' + (GH_TOKEN ? 'yes (token: ' + GH_TOKEN.substring(0,6) + '...)' : 'NO - DATA WILL BE LOST ON RESTART'));
 });
