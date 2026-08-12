@@ -119,8 +119,8 @@
       }
     },
     "autoScore": 80,
-    "mentorScore": 18,
-    "finalScore": 82,
+    "mentorScore": null,
+    "finalScore": 80,
     "passed": false,
     "startTime": "2026-08-12T11:32:10.609Z",
     "submitTime": "2026-08-12T11:32:41.281Z",
@@ -143,16 +143,7 @@
         "max": 20
       }
     },
-    "mentorScored": true,
-    "mentorScoreDetails": {
-      "w1d1_q17": {
-        "autoScore": 8,
-        "mentorScore": 9
-      },
-      "w1d1_q18": {
-        "autoScore": 8,
-        "mentorScore": 9
-      }
-    }
+    "mentorScored": false,
+    "mentorScoreDetails": null
   }
 ]
