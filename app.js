@@ -191,6 +191,8 @@ const Store = {
   _setCache(rs){localStorage.setItem('quiz_records',JSON.stringify(rs))},
   getRecords(){return this._getCache()},
   getRecord(id){return this._getCache().find(r=>r.id===id)},
+  // 从学员缓存或导师缓存中查找记录（用于导师端查看/评分操作）
+  getAnyRecord(id){return this._getCache().find(r=>r.id===id)||this._getMCache().find(r=>r.id===id)},
 
   // 导师端独立缓存
   _getMCache(){try{return JSON.parse(localStorage.getItem('quiz_mentor_records')||'[]')}catch(e){return[]}},
@@ -606,7 +608,9 @@ function confirmExitQuiz(){
     navigate('#/exams');
   }
 }
+let _submitting=false;
 function confirmSubmit(){
+  if(_submitting)return;
   const unanswered=quizState.questions.filter(q=>{
     const a=quizState.answers[q.id];
     if(q.type==='multiple')return !a||a.length===0;
@@ -618,13 +622,14 @@ function confirmSubmit(){
   }else{
     if(!confirm('确定要提交试卷吗？提交后不可修改。'))return;
   }
+  _submitting=true;
   submitQuiz();
 }
 async function submitQuiz(){
   if(quizTimer)clearInterval(quizTimer);
   const{examId,questions,answers,startTime}=quizState;
   const user=Store.getUser();
-  if(!user){showToast('请先登录','error');return}
+  if(!user){_submitting=false;showToast('请先登录','error');return}
   
   // 评分
   const questionScores={};
@@ -663,6 +668,7 @@ async function submitQuiz(){
   // 先POST到服务器，拿到服务器确认的record后再更新本地
   const savedRecord=await Store.saveRecord(record);
   quizState=null;
+  _submitting=false;
   if(savedRecord){
     showToast(`提交成功！得分：${totalScore}分`,totalScore>=CONFIG.passingScore?'success':'error');
     navigate(`#/result/${savedRecord.id}`);
@@ -779,7 +785,17 @@ function renderMentorLogin(){
 async function doMentorLogin(){
   const pwd=$('#mentorPwd').value;
   if(pwd!==CONFIG.mentorPassword){showToast('密码错误','error');return}
-  try{const res=await fetch(API_BASE+'/api/mentor/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:pwd})});const d=await res.json();if(d.success)Store._setToken(d.token)}catch(e){}
+  let tokenObtained=false;
+  try{
+    const res=await fetch(API_BASE+'/api/mentor/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:pwd})});
+    const d=await res.json();
+    if(d.success&&d.token){Store._setToken(d.token);tokenObtained=true;}
+  }catch(e){console.error('[API] mentor login failed:',e)}
+  if(!tokenObtained){
+    // 如果API不可用，使用本地密码直接登录（离线模式）
+    Store._setToken('mentor_token_offline_'+Date.now());
+    console.log('[mentor] API unavailable, using offline token');
+  }
   Store.setMentor(true);
   await Store.syncAllRecords();
   await Store.syncPlan();
@@ -965,8 +981,8 @@ function renderMentorRecords(){
 }
 
 function viewRecordDetail(recordId){
-  const r=Store.getRecord(recordId);
-  if(!r)return;
+  const r=Store.getAnyRecord(recordId);
+  if(!r){showToast('未找到该记录，请刷新后重试','error');return;}
   const questions=getQuestions(r.examId);
   const exam=getExam(r.examId);
   
@@ -1360,8 +1376,8 @@ function renderMentorScoring(){
 }
 
 async function saveMentorScore(recordId){
-  const r=Store.getRecord(recordId);
-  if(!r)return;
+  const r=Store.getAnyRecord(recordId);
+  if(!r){showToast('未找到该记录，请刷新后重试','error');return;}
   const questions=getQuestions(r.examId).filter(q=>q.type==='short');
   let mentorScoreDetails={};
   // autoScore 已包含所有题目的自动评分（含简答题自动评分）
@@ -1392,7 +1408,7 @@ async function saveMentorScore(recordId){
   
   newTypeScores.short={score:shortScore,max:shortMax};
   
-  await Store.updateRecord(recordId,{
+  const result=await Store.updateRecord(recordId,{
     mentorScore:shortScore,
     finalScore:totalScore,
     passed:totalScore>=CONFIG.passingScore,
@@ -1401,6 +1417,7 @@ async function saveMentorScore(recordId){
     questionScores:newQuestionScores,
     typeScores:newTypeScores,
   });
+  if(!result){showToast('保存失败，请检查网络后重试','error');return;}
   const objectiveScore=totalScore-shortScore;
   showToast(`评分已保存，最终分数：${totalScore}分（客观题${objectiveScore}分 + 简答题${shortScore}分）`,'success');
   renderMentorScoring();
@@ -1408,7 +1425,8 @@ async function saveMentorScore(recordId){
 
 async function resetMentorScore(recordId){
   if(!confirm('确定要重新评分吗？之前的导师评分将被清除。'))return;
-  await Store.resetRecordScore(recordId);
+  const result=await Store.resetRecordScore(recordId);
+  if(!result){showToast('重置失败，请检查网络后重试','error');return;}
   showToast('已重置为自动评分','info');
   renderMentorScoring();
 }

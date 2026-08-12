@@ -219,15 +219,31 @@ app.post('/api/records', (req, res) => {
   // 保留客户端ID，不覆盖（避免ID不一致导致同步时重复）
   if (!record.id) record.id = 'r_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
   record.submitTime = record.submitTime || new Date().toISOString();
-  // 去重：同一学员+同一考试+5秒内提交视为重复
+  // 去重策略1：同一ID已存在（客户端重试）
+  const dupById = records.find(r => r.id === record.id);
+  if (dupById) {
+    console.log('[dedup] Duplicate by ID, returning existing record');
+    return res.json({ success: true, record: dupById, deduped: true });
+  }
+  // 去重策略2：同一学员+同一考试+5秒内提交视为重复
   const dup = records.find(r =>
     r.studentName === record.studentName &&
     r.examId === record.examId &&
     Math.abs(new Date(r.submitTime).getTime() - new Date(record.submitTime).getTime()) < 5000
   );
   if (dup) {
-    console.log('[dedup] Duplicate submission detected, returning existing record');
+    console.log('[dedup] Duplicate by time window, returning existing record');
     return res.json({ success: true, record: dup, deduped: true });
+  }
+  // 去重策略3：同一学员+同一考试+相同答案内容（完全相同的提交）
+  const dupByContent = records.find(r =>
+    r.studentName === record.studentName &&
+    r.examId === record.examId &&
+    JSON.stringify(r.answers) === JSON.stringify(record.answers)
+  );
+  if (dupByContent) {
+    console.log('[dedup] Duplicate by content, returning existing record');
+    return res.json({ success: true, record: dupByContent, deduped: true });
   }
   records.push(record);
   writeJSON('records.json', records);
