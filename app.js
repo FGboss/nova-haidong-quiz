@@ -1386,8 +1386,6 @@ async function saveMentorScore(recordId){
   const questions=getQuestions(r.examId).filter(q=>q.type==='short');
   if(questions.length===0){showToast('该考试无简答题','error');return;}
   let mentorScoreDetails={};
-  // autoScore 已包含所有题目的自动评分（含简答题自动评分）
-  let totalScore=Number(r.autoScore)||0;
   let shortScore=0,shortMax=0;
   // 深拷贝 questionScores 和 typeScores，避免直接修改缓存对象
   const newQuestionScores={...(r.questionScores||{})};
@@ -1398,6 +1396,7 @@ async function saveMentorScore(recordId){
     short:{score:0,max:0}
   };
   
+  // 收集每个简答题的导师评分
   questions.forEach(q=>{
     const oldScore=Number(r.questionScores?.[q.id]?.score)||0;
     const input=$(`#score_${recordId}_${q.id}`);
@@ -1407,16 +1406,19 @@ async function saveMentorScore(recordId){
     const originalAutoScore=(r.mentorScored&&r.mentorScoreDetails&&r.mentorScoreDetails[q.id])
       ?r.mentorScoreDetails[q.id].autoScore:oldScore;
     mentorScoreDetails[q.id]={autoScore:originalAutoScore,mentorScore:newScore};
-    totalScore=totalScore-oldScore+newScore;
     shortScore+=newScore;
     shortMax+=Number(q.points)||0;
     newQuestionScores[q.id]={score:newScore,maxScore:Number(q.points)||0};
   });
   
+  newTypeScores.short={score:shortScore,max:shortMax};
+  
+  // 总分 = 客观题（单选+多选+判断）分数 + 简答题导师评分
+  const objectiveScore = (Number(newTypeScores.single.score)||0) + (Number(newTypeScores.multiple.score)||0) + (Number(newTypeScores.judge.score)||0);
+  const totalScore = objectiveScore + shortScore;
+  
   // 防止 NaN
   if(isNaN(totalScore)){showToast('分数计算出错，请刷新后重试','error');return;}
-  
-  newTypeScores.short={score:shortScore,max:shortMax};
   
   const result=await Store.updateRecord(recordId,{
     mentorScore:shortScore,
@@ -1428,7 +1430,6 @@ async function saveMentorScore(recordId){
     typeScores:newTypeScores,
   });
   if(!result){showToast('保存失败，请检查网络后重试','error');return;}
-  const objectiveScore=totalScore-shortScore;
   showToast(`评分已保存，最终分数：${totalScore}分（客观题${objectiveScore}分 + 简答题${shortScore}分）`,'success');
   // 保存后重新从服务器同步全部数据，确保导师缓存和服务器一致
   await Store.syncAllRecords();
