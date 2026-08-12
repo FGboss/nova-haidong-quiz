@@ -110,18 +110,18 @@
         "maxScore": 5
       },
       "w1d1_q17": {
-        "score": 5,
+        "score": 8,
         "maxScore": 10
       },
       "w1d1_q18": {
-        "score": 5,
+        "score": 8,
         "maxScore": 10
       }
     },
     "autoScore": 80,
-    "mentorScore": null,
-    "finalScore": 80,
-    "passed": false,
+    "mentorScore": 16,
+    "finalScore": 96,
+    "passed": true,
     "startTime": "2026-08-12T11:32:10.609Z",
     "submitTime": "2026-08-12T11:32:41.281Z",
     "duration": 31,
@@ -139,11 +139,20 @@
         "max": 20
       },
       "short": {
-        "score": 10,
+        "score": 16,
         "max": 20
       }
     },
-    "mentorScored": false,
-    "mentorScoreDetails": null
+    "mentorScored": true,
+    "mentorScoreDetails": {
+      "w1d1_q17": {
+        "autoScore": 5,
+        "mentorScore": 8
+      },
+      "w1d1_q18": {
+        "autoScore": 5,
+        "mentorScore": 8
+      }
+    }
   }
 ]
